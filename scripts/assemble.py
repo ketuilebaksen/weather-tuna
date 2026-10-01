@@ -248,6 +248,23 @@ def media_lib(sub, exts):
         files += glob.glob(os.path.join(BASE, "work", sub, "**", e), recursive=True)
     return sorted(set(files))
 
+def one_per_track(files, prefer=(".mp3", ".m4a", ".wav", ".flac")):
+    """Collapse the same piece of music uploaded in several formats.
+
+    Suno hands you Aftermath.Silence.mp3 and Aftermath.Silence.wav, and both
+    get uploaded. Without this the bed treats them as two different tracks and
+    can play the same piece twice in a row, which is the audio version of
+    cutting to the same shot twice. Smallest useful format wins.
+    """
+    best = {}
+    for f in files:
+        stem, ext = os.path.splitext(os.path.basename(f))
+        stem = stem.lower()
+        rank = prefer.index(ext.lower()) if ext.lower() in prefer else len(prefer)
+        if stem not in best or rank < best[stem][0]:
+            best[stem] = (rank, f)
+    return sorted(v[1] for v in best.values())
+
 class Broll:
     def __init__(self, rng):
         self.rng = rng
@@ -1185,6 +1202,11 @@ def main():
 
         # background music bed from owner's library
         tracks = media_lib("music", ("*.mp3", "*.wav", "*.m4a", "*.MP3", "*.WAV"))
+        n_raw = len(tracks)
+        tracks = one_per_track(tracks)
+        if n_raw != len(tracks):
+            print(f"[assemble] muzik: {n_raw} dosyadan {len(tracks)} ayri parca "
+                  f"(ayni parcanin mp3/wav kopyalari birlestirildi)")
         if tracks:
             rng.shuffle(tracks)
             bed = AudioSegment.silent(duration=0)
@@ -1195,13 +1217,21 @@ def main():
                 except Exception as e:
                     print(f"[assemble] music track skipped: {e}")
                 ti += 1
-                if ti > 50:
+                # 50 was plenty for a four minute video and not nearly enough
+                # for a seventeen minute one, where the bed simply stopped
+                # partway through. Scale the ceiling with the video.
+                if ti > max(50, int(total / 20) + len(tracks) * 2):
                     break
             bed = bed[:int(total * 1000)]
             rel = MUSIC_GAIN - NARR_GAIN          # -30.5 dB under the narration
             bed = bed.apply_gain(NARR_PEAK + rel - bed.max_dBFS)
             bed = bed.fade_in(2500).fade_out(3500)
             mix = mix.overlay(bed)
+            print(f"[assemble] music bed: {len(tracks)} parca, {ti} kez "
+                  f"eklendi, {rel:.1f} dB narration altinda "
+                  f"({bed.max_dBFS:.1f} dBFS)")
+        else:
+            print("[assemble] no music library — narration only")
 
         # A room tone under everything — crowd, distant whistles, stadium air.
         # It is mixed far below the voice on purpose: you should not be able
@@ -1224,10 +1254,6 @@ def main():
                 mix = mix.overlay(room)
                 print(f"[assemble] ambient bed: {len(amb)} files, "
                       f"{AMBIENT_UNDER:.0f} dB under narration")
-            print(f"[assemble] music bed: {ti} track loops, "
-                  f"{rel:.1f} dB under narration ({bed.max_dBFS:.1f} dBFS)")
-        else:
-            print("[assemble] no music library — narration only")
         mix.export(mixed_path, format="wav")
     except Exception as e:
         print(f"[assemble] audio mix fallback ({e})")

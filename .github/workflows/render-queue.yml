@@ -167,7 +167,13 @@ jobs:
               | xargs -0 -P 8 -I{} bash -c 'dl_one "$@"' _ {}
             echo "indirilen klip: $(find work/broll -type f | wc -l)"
           fi
-          gh release download music -R "$MUSIC_REPO" -D work/music || echo "no music release"
+          # Suno ayni parcayi hem mp3 hem wav verir ve ikisi de yuklenir. wav'lar
+          # 35-40 MB, mp3'ler 4 MB ve icerik ayni. Once sadece mp3 denenir;
+          # hic mp3 yoksa ne varsa indirilir.
+          gh release download music -R "$MUSIC_REPO" -p '*.mp3' -D work/music 2>/dev/null \
+            || gh release download music -R "$MUSIC_REPO" -D work/music \
+            || echo "no music release"
+          echo "muzik dosyasi: $(ls work/music 2>/dev/null | wc -l)"
           gh release download photos -R "$MEDIA_REPO" -D work/photos || echo "no photos release"
           # stadyum ugultusu / ortam sesi — opsiyonel, yoksa video sessiz zeminde kalir
           gh release download ambient -R "$MEDIA_REPO" -D work/ambient || echo "no ambient release"
