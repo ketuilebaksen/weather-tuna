@@ -94,6 +94,7 @@ jobs:
           MUSIC_REPO: ${{ vars.MUSIC_REPO || github.repository }}
           VIDEO_TITLE: ${{ matrix.item.title }}
           PLAYER_POOL_MIN: ${{ vars.PLAYER_POOL_MIN || '12' }}
+          BROLL_SAMPLE: ${{ vars.BROLL_SAMPLE || '320' }}
         run: |
           mkdir -p work/broll work/music work/photos work/ambient work/motion
           # b-roll birden fazla release'e bolunuyor: GitHub bir release'e en fazla
@@ -126,10 +127,45 @@ jobs:
           if [ "$use_general" = 1 ]; then
             broll_tags=$(printf '%s\n' "$all_tags" | grep -E '^broll[0-9]*$' || true)
             [ -n "$broll_tags" ] || broll_tags="broll"
+
+            # BUYUK HAVUZ ICIN ORNEKLEME.
+            # Binlerce klibi her render'da indirmek hem calistiricinin diskini
+            # doldurur hem de indirmeyi isin en uzun adimi yapar. Bunun yerine
+            # once butun havuzun dosya listesi cikarilir, sonra o listeden bu
+            # videoya ozel rastgele bir dilim secilir ve sadece o dilim inar.
+            # Yan faydasi: her video havuzun baska bir dilimini gorur, yani
+            # videolar birbirine benzemez.
+            : > work/broll_all.txt
             for tag in $broll_tags; do
-              mkdir -p "work/broll/$tag"
-              gh release download "$tag" -R "$MEDIA_REPO" -D "work/broll/$tag" || echo "no $tag release"
+              gh release view "$tag" -R "$MEDIA_REPO" --json assets \
+                -q '.assets[].name' 2>/dev/null \
+                | sed "s#^#$tag\t#" >> work/broll_all.txt \
+                || echo "no $tag release"
             done
+            total=$(wc -l < work/broll_all.txt)
+            limit=${BROLL_SAMPLE:-320}
+            if [ "$total" -gt "$limit" ]; then
+              shuf -n "$limit" work/broll_all.txt > work/broll_pick.txt
+              echo "STOK HAVUZU: $total klipten $limit tanesi bu video icin secildi"
+            else
+              cp work/broll_all.txt work/broll_pick.txt
+              echo "STOK HAVUZU: $total klip (havuzun tamami)"
+            fi
+
+            export GH_TOKEN MEDIA_REPO
+            dl_one() {
+              tag=${1%%$'\t'*}; file=${1#*$'\t'}
+              [ -n "$file" ] || return 0
+              mkdir -p "work/broll/$tag"
+              pat=$(printf '%s' "$file" | sed 's/[][*?\\]/\\&/g')
+              gh release download "$tag" -R "$MEDIA_REPO" -p "$pat" \
+                -D "work/broll/$tag" --clobber >/dev/null 2>&1 \
+                || echo "indirilemedi: $tag / $file"
+            }
+            export -f dl_one
+            tr '\n' '\0' < work/broll_pick.txt \
+              | xargs -0 -P 8 -I{} bash -c 'dl_one "$@"' _ {}
+            echo "indirilen klip: $(find work/broll -type f | wc -l)"
           fi
           gh release download music -R "$MUSIC_REPO" -D work/music || echo "no music release"
           gh release download photos -R "$MEDIA_REPO" -D work/photos || echo "no photos release"

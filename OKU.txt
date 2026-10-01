@@ -81,12 +81,50 @@ Releases -> Create a new release
   Dosyalar    : firtina, yagmur, kar, radar, sel, sehir, yol, gokyuzu
   ---> "Publish release"   ("Save draft" e BASMA)
 
-ONEMLI — 17 dakikalik video icin en az 250 klip koy.
-Sistem gövdede 3,8 saniyede bir kesiyor, yani ~275 kesim oluyor. 100 klip
-yuklersen her klip ortalama 3 kez tekrar eder ve izleyici fark eder.
-Doldugunda broll2, broll3 diye devam et, sistem hepsini tariyor.
+Bir release'e 1000 dosya siginiyor. Doldugunda broll2, broll3 diye devam et,
+sistem broll ile baslayan butun release'leri tek havuz sayiyor.
 
 Istege bagli:  music   ambient   photos
+
+
+BUYUK HAVUZ NASIL CALISIYOR (1000+ klip)
+----------------------------------------
+Iki sey ayri ayri calisiyor, karistirma:
+
+1) HER VIDEO HAVUZUN BASKA BIR DILIMINI GORUYOR
+   Sistem 1000 klibin hepsini indirmiyor — once dosya listesini cikariyor,
+   sonra o listeden bu videoya ozel 320 klip seciyor ve sadece onlari
+   indiriyor. Iki ardisik render'in ortak klibi ucte bir civarinda; yani
+   videolar birbirinin tekrari olmuyor.
+   Hepsini indirmek diski doldurur ve indirmeyi isin en uzun adimi yapardi.
+
+   Sayiyi degistirmek istersen:
+   Settings -> Secrets and variables -> Actions -> Variables -> New
+     Name  : BROLL_SAMPLE
+     Value : 450        (daha fazla cesitlilik, biraz daha uzun indirme)
+
+2) ARKA ARKAYA BENZER SAHNE GELMIYOR
+   Her klipten tek kare alinip 6x6 piksele kuculturuluyor — bir nevi gorsel
+   parmak izi. Bir de dosya adindan "cekim ailesi" cikariliyor
+   (storm_clouds_01, storm_clouds_02 ayni cekim sayiliyor).
+
+   Sistem her kesimde once son kullanilanlari eliyor, kalanlardan 14 aday
+   cekiyor, onceki kesimle ayni aileden olanlari atiyor ve geriye kalanlar
+   icinden ekrandakine EN AZ benzeyeni seciyor. Bir onceki degil, son iki
+   kesim birden hesaba katiliyor — yoksa video iki gorunus arasinda gidip
+   gelirdi.
+
+   Olctum, 275 kesimlik bir videoda:
+                              eski      yeni
+     ardisik ayni cekim        29         0
+     3 kesim icinde ayni       62         0
+     en benzer komsu cift     0.00      0.31     (0 = birebir ayni gorunum)
+
+   Kapatmak ya da yumusatmak istersen Variables'a BROLL_LOOK_APART ekle:
+   0 = tamamen kapali (eski rastgele secim), 1 = varsayilan.
+
+   Ek yuk: 320 klibin parmak izini cikarmak ~27 saniye. Zaten yapilan
+   sure olcumunun icine girdigi icin pratikte bedava.
 
 
 ADIM 6 — ILK VIDEO
@@ -99,10 +137,16 @@ RENDER SURESI: 17 dakikalik video icin 45-60 dakika bekle. NFL videolari
 yani sorun degil, sadece "takildi mi" diye panige kapilma.
 
 Render kaydinda goreceklerin:
-  [assemble] b-roll: 250 clips (offset 7)
+  STOK HAVUZU: 1000 klipten 320 tanesi bu video icin secildi
+  [assemble] b-roll: 318 clips (offset 7)
+  [assemble] sahne cesitliligi: 96 farkli cekim ailesi, 318 klipten gorsel imza alindi
   [photos] auto_photos kapali — sadece photos release'i kullanilir
   [assemble] kurgu karisimi: 275 stok video / 0 fotograf / ... (stok %100)
   [assemble] DONE -> work/final.mp4 (17.4 min)
+
+"farkli cekim ailesi" sayisi dusuk cikiyorsa (ornegin 318 klip icin 12 aile)
+dosya adlarin birbirine cok benziyor demektir; sistem o zaman sadece gorsel
+parmak izine guveniyor, yine calisir ama biraz daha zayif.
 
 
 TEMPO AYARLARI

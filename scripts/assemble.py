@@ -132,6 +132,81 @@ def ffdur(path):
     except ValueError:
         return 0.0
 
+def clip_signature(path):
+    """A coarse fingerprint of what a clip looks like.
+
+    One frame, shrunk to 6x6 pixels. That is enough to tell a grey rain street
+    from a blue sky from a red radar map, and it is small enough that a
+    thousand of them cost nothing to compare. We are not trying to recognise
+    content — only to answer "does this look like the shot we just used".
+    """
+    r = subprocess.run(
+        ["ffmpeg", "-v", "error", "-ss", "1", "-i", path, "-frames:v", "1",
+         "-vf", "scale=6:6", "-pix_fmt", "rgb24", "-f", "rawvideo", "-"],
+        capture_output=True)
+    raw = r.stdout
+    if len(raw) < 108:                      # clip shorter than the seek point
+        r = subprocess.run(
+            ["ffmpeg", "-v", "error", "-i", path, "-frames:v", "1",
+             "-vf", "scale=6:6", "-pix_fmt", "rgb24", "-f", "rawvideo", "-"],
+            capture_output=True)
+        raw = r.stdout
+    if len(raw) < 108:
+        return None
+    return tuple(raw[:108])
+
+def sig_distance(a, b):
+    """0.0 = identical looking, 1.0 = nothing in common."""
+    if not a or not b:
+        return 0.5                          # unknown: neither encourage nor block
+    return sum(abs(x - y) for x, y in zip(a, b)) / (108 * 255.0)
+
+def clip_family(path):
+    """Clips that came out of the same pack, by filename.
+
+    Stock libraries ship shots in runs: storm_clouds_01, storm_clouds_02,
+    pexels-7823-4k, pexels-7823-hd. Those are the same scene, so filename is
+    a stronger similarity signal than any pixel measurement, and it is free.
+    """
+    stem = os.path.splitext(os.path.basename(path))[0].lower()
+    stem = re.sub(r"[\s_\-]*\(?\d+\)?$", "", stem)      # trailing counter
+    stem = re.sub(r"[\s_\-]*(4k|1080p?|hd|uhd|60fps|30fps)$", "", stem)
+    stem = re.sub(r"[^a-z]+", " ", stem).strip()
+    words = stem.split()
+    return " ".join(words[:3]) if words else stem
+
+def clip_family_runs(path, bucket=6):
+    """Fallback grouping for depots whose filenames carry no scene information.
+
+    A library exported as V1_0930_sahne_000 ... sahne_999 gives clip_family()
+    nothing to work with: every name collapses to the same string. But those
+    numbers are not random — a run of consecutive indices usually comes out of
+    one source video, which is exactly the footage that must not sit back to
+    back. So we group by the stem plus a bucket of the trailing number.
+    """
+    stem = os.path.splitext(os.path.basename(path))[0].lower()
+    m = re.search(r"(\d+)(?!.*\d)", stem)
+    if not m:
+        return stem
+    head = stem[:m.start()]
+    return f"{head}#{int(m.group(1)) // max(1, bucket)}"
+
+def scan_clips(files):
+    """Duration + signature for every clip, in parallel.
+
+    Serially this was one ffprobe per clip and nothing else. A thousand-clip
+    depot made that the slowest step in the whole render, so both probes now
+    run on a thread pool: they are subprocesses, so threads are the right tool.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    def one(f):
+        return f, ffdur(f), clip_signature(f)
+
+    workers = min(8, (os.cpu_count() or 2) * 2)
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        return list(ex.map(one, files))
+
 def esc(text, maxlen=40):
     """On-screen caption text, safe for an ffmpeg drawtext value.
 
@@ -177,49 +252,114 @@ class Broll:
     def __init__(self, rng):
         self.rng = rng
         self.clips = []
-        for f in media_lib("broll", ("*.mp4", "*.mov", "*.mkv", "*.webm", "*.m4v",
-                                     "*.MP4", "*.MOV")):
-            d = ffdur(f)
+        self.sigs = []
+        self.fams = []
+        files = media_lib("broll", ("*.mp4", "*.mov", "*.mkv", "*.webm", "*.m4v",
+                                    "*.MP4", "*.MOV"))
+        scanned = []
+        for f, d, sig in scan_clips(files):
             if d >= 3.0:
-                self.clips.append((f, d))
-        self.rng.shuffle(self.clips)
+                scanned.append((f, d, sig))
+        self.rng.shuffle(scanned)
+        self.clips = [(f, d) for f, d, _ in scanned]
+        self.sigs = [sig for _, _, sig in scanned]
+        self.fams = [clip_family(f) for f, _, _ in scanned]
+        # If the names gave us almost no groups, they were batch names rather
+        # than scene names. Fall back to runs of consecutive numbers, which is
+        # where same-source footage actually hides in that kind of library.
+        if len(set(self.fams)) < max(4, len(self.clips) // 20):
+            self.fams = [clip_family_runs(f) for f, _, _ in scanned]
+            self.fam_mode = "dosya adi bilgi vermiyor, ardisik numara bloklari"
+        else:
+            self.fam_mode = "dosya adindan"
         # A photo-led channel draws only a handful of clips from the depot and
         # lives off them: the same nine shots, re-framed and re-cut. Trimming
         # the deck here rather than counting cuts later is what makes that
         # true everywhere — opener, hook and body all draw from the same nine.
         if BROLL_POOL > 0 and len(self.clips) > BROLL_POOL:
             keep = self.rng.randrange(len(self.clips))
-            rot = self.clips[keep:] + self.clips[:keep]
-            self.clips = rot[:BROLL_POOL]
+            order = list(range(keep, len(self.clips))) + list(range(keep))
+            order = order[:BROLL_POOL]
             print(f"[assemble] stok havuzu {BROLL_POOL} klibe indirildi "
-                  f"({len(rot)} klipten)")
+                  f"({len(self.clips)} klipten)")
+            self.clips = [self.clips[k] for k in order]
+            self.sigs = [self.sigs[k] for k in order]
+            self.fams = [self.fams[k] for k in order]
         # Every video starts the deck at its own point. This used to be keyed
         # to the date, so five videos rendered in one morning opened on the
         # same clip in the same order.
         self.i = self.rng.randrange(max(1, len(self.clips)))
         self.recent = []
-        self.cooldown = int(os.environ.get("BROLL_COOLDOWN", "8"))
+        # A fixed cooldown of 8 was built for a depot of thirty clips. On a
+        # big depot it let the picker keep circling its favourite hundred and
+        # leave the rest on the shelf, so it now scales with the library: a
+        # clip cannot come back until a third of the depot has been used.
+        self.cooldown = int(os.environ.get(
+            "BROLL_COOLDOWN", str(max(8, len(self.clips) // 3))))
+        # How hard to push for a different looking shot than the one before.
+        # 0 turns the whole thing off and restores pure random picking.
+        self.look = float(os.environ.get("BROLL_LOOK_APART", "1.0"))
+        self.tries = int(os.environ.get("BROLL_LOOK_TRIES", "14"))
+        self.skipped_fam = 0
+        n_fam = len(set(self.fams))
+        n_sig = sum(1 for g in self.sigs if g)
         print(f"[assemble] b-roll: {len(self.clips)} clips (offset {self.i})")
+        print(f"[assemble] sahne cesitliligi: {n_fam} farkli cekim ailesi "
+              f"({self.fam_mode}), {n_sig} klipten gorsel imza alindi")
 
     def any(self):
         return len(self.clips) > 0
 
     def pick(self, need, avoid_repeat=True):
-        """Next clip. Round-robin was perfectly cyclic, so the same footage
-        came back in the same order every time and the video felt looped.
-        Now we keep a short memory and take a clip that has not been on
-        screen recently, chosen at random among those."""
+        """Next clip, chosen to look different from the one before it.
+
+        A cooldown alone only stops the *same file* coming back. With a large
+        depot the problem is the opposite: a hundred clips of grey rain, and
+        eight of them land in a row because each one is technically a new
+        file. So among the clips that are off cooldown we sample a handful,
+        throw out anything from the same shoot as the previous cut, and keep
+        whichever looks furthest from what is on screen right now. The last
+        two cuts both count, the previous one twice as much, so the video
+        does not ping-pong between two looks either.
+        """
         n = len(self.clips)
         if not avoid_repeat or n <= 2:
             f, d = self.clips[self.i % n]
             self.i += 1
+            return f, self.rng.uniform(0, max(0.0, d - need - 0.2))
+
+        cool = min(self.cooldown, n - 1)
+        fresh = [k for k in range(n) if k not in self.recent[-cool:]]
+        if not fresh:
+            fresh = [self.i % n]
+
+        if self.look <= 0 or len(fresh) == 1:
+            k = self.rng.choice(fresh)
         else:
-            cool = min(self.cooldown, n - 1)
-            fresh = [k for k in range(n) if k not in self.recent[-cool:]]
-            k = self.rng.choice(fresh) if fresh else self.i % n
-            f, d = self.clips[k]
-            self.recent.append(k)
-            self.i += 1
+            prev = self.recent[-1] if self.recent else None
+            prev2 = self.recent[-2] if len(self.recent) > 1 else None
+            cands = self.rng.sample(fresh, min(self.tries, len(fresh)))
+            if prev is not None:
+                same_shoot = [c for c in cands if self.fams[c] == self.fams[prev]]
+                widened = [c for c in cands if self.fams[c] != self.fams[prev]]
+                if widened:
+                    self.skipped_fam += len(same_shoot)
+                    cands = widened
+            best, best_score = cands[0], -1.0
+            for c in cands:
+                score = 1.0
+                if prev is not None:
+                    score *= sig_distance(self.sigs[c], self.sigs[prev]) ** 2
+                if prev2 is not None:
+                    score *= sig_distance(self.sigs[c], self.sigs[prev2])
+                score *= (0.6 + 0.4 * self.rng.random())   # keep it unpredictable
+                if score > best_score:
+                    best, best_score = c, score
+            k = best
+
+        f, d = self.clips[k]
+        self.recent.append(k)
+        self.i += 1
         return f, self.rng.uniform(0, max(0.0, d - need - 0.2))
 
     def last(self):
