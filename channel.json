@@ -1,0 +1,29 @@
+{
+  "name": "WEATHER TUNA",
+  "outro_tag": "US WEATHER EVERY DAY",
+  "editorial": "news",
+  "clip_offset": 107,
+  "team": "the United States",
+  "nickname": "America",
+  "league": "US weather",
+  "sport": "weather",
+  "venue": "",
+  "sources": "National Weather Service, NOAA, National Hurricane Center, Storm Prediction Center, AccuWeather, The Weather Channel, local news affiliates",
+  "hashtags": "#weather #USA #storm #breaking #WeatherTuna",
+  "roster": [],
+  "auto_photos": false,
+  "tts_engine": "eleven",
+  "eleven_voice_id": "S9UjcNYIwfBOtZiDnIQT",
+  "palette": {
+    "primary": [255, 78, 58],
+    "secondary": [0, 168, 220],
+    "ink": [8, 14, 24]
+  },
+  "hook_cut": 2.6,
+  "body_cut": 3.8,
+  "photo_zoom": 0.08,
+  "overlay_kinds": ["speech", "lower3", "comic"],
+  "overlay_every_sec": 24,
+  "bounce": true,
+  "thumb_engine": "none"
+}

@@ -1,0 +1,230 @@
+name: render-queue
+# Sıra ile değil, aynı anda: content/queue içine kaç ses dosyası atarsan
+# her biri için ayrı bir makine kalkar ve kendi videosunu kurar.
+#
+# Kural: dosyanın adı videonun başlığıdır ve aynı zamanda kimliğidir.
+# O ada karşılık gelen bir Release zaten varsa o dosya atlanır — yani
+# kuyruğu temizlemeyi unutsan da aynı video ikinci kez render edilmez.
+# Yeniden kurdurmak istersen: ya dosyanın adını değiştir, ya o Release'i sil.
+#
+# Bu workflow YouTube'a hiçbir şey yüklemez. Video Release olarak yayınlanır,
+# indirmeyi ve kanala yüklemeyi sahibi elle yapar.
+on:
+  push:
+    paths:
+      - "content/queue/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      jobs: ${{ steps.list.outputs.jobs }}
+      count: ${{ steps.list.outputs.count }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Kuyruğu oku
+        id: list
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/queue_plan.py
+
+  video:
+    needs: plan
+    if: needs.plan.outputs.count != '0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      # Wikimedia oyuncu fotoğraflarını çekerken aynı anda çok istek atarsak
+      # 429 yiyoruz; üçer üçer gitmek hem hızlı hem güvenli.
+      max-parallel: 3
+      matrix:
+        item: ${{ fromJson(needs.plan.outputs.jobs) }}
+    name: ${{ matrix.item.title }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+          pip install -q Pillow numpy pydub rembg onnxruntime opencv-python-headless faster-whisper
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Hareketli grafikler (Remotion)
+        continue-on-error: true
+        run: |
+          # Remotion sadece açılıştaki grafikleri üretiyor; kurulamazsa video
+          # yine çıkar, sayfalar eski ffmpeg yöntemiyle çizilir.
+          if [ -f scripts/remotion_setup.py ]; then
+            python3 scripts/remotion_setup.py
+            if [ -x /usr/bin/google-chrome ]; then
+              echo "REMOTION_CHROME=/usr/bin/google-chrome" >> $GITHUB_ENV
+            else
+              (cd remotion && npx --yes remotion browser ensure) || true
+            fi
+          else
+            echo "remotion_setup.py yok — grafikler ffmpeg ile cizilecek"
+          fi
+
+      - name: Sesi çöz ve kurguyu ona göre kes
+        env:
+          AUDIO_FILE: ${{ matrix.item.path }}
+          WHISPER_MODEL: ${{ vars.WHISPER_MODEL || 'small' }}
+          PUNCH_EVERY: ${{ vars.PUNCH_EVERY || '4' }}
+        run: |
+          mkdir -p content/current
+          python3 scripts/align.py
+
+      - name: Download media libraries
+        env:
+          GH_TOKEN: ${{ secrets.ADMIN_PAT || github.token }}
+          MEDIA_REPO: ${{ vars.MEDIA_REPO || github.repository }}
+          MUSIC_REPO: ${{ vars.MUSIC_REPO || github.repository }}
+          VIDEO_TITLE: ${{ matrix.item.title }}
+          PLAYER_POOL_MIN: ${{ vars.PLAYER_POOL_MIN || '12' }}
+        run: |
+          mkdir -p work/broll work/music work/photos work/ambient work/motion
+          # b-roll birden fazla release'e bolunuyor: GitHub bir release'e en fazla
+          # 1000 dosya kabul ediyor. broll, broll2, broll3... etiketli hepsi indirilir;
+          # yeni stok eklemek icin bir sonraki numarayla release acmak yeterli.
+          # Her etiket kendi alt klasorune iner, ayni adli dosyalar cakismaz
+          # (assemble.py work/broll'u alt klasorleriyle birlikte tarar).
+          all_tags=$(gh release list -R "$MEDIA_REPO" --limit 1000 --json tagName -q '.[].tagName' || true)
+
+          # OYUNCUYA OZEL HAVUZ. Her video tek bir oyuncuyu anlatiyor; o oyuncu
+          # icin "oyuncu-<isim>" etiketli bir release varsa (oyuncu-patrick-mahomes)
+          # ve metin o oyuncudan bahsediyorsa video o havuzdan kurulur. Hangi
+          # oyuncu oldugunu metin ve basliktan pick_player_pool.py cikariyor.
+          use_general=1
+          player_tag=$(printf '%s\n' "$all_tags" | python3 scripts/pick_player_pool.py content/current/script.json "$VIDEO_TITLE" || true)
+          if [ -n "$player_tag" ]; then
+            mkdir -p work/broll/oyuncu
+            gh release download "$player_tag" -R "$MEDIA_REPO" -D work/broll/oyuncu || echo "$player_tag indirilemedi"
+            n=$(find work/broll/oyuncu -type f | wc -l)
+            echo "OYUNCU HAVUZU: $player_tag ($n klip)"
+            if [ "$n" -ge "$PLAYER_POOL_MIN" ]; then
+              use_general=0
+            else
+              echo "oyuncu havuzu $PLAYER_POOL_MIN klipten az — genel broll ile tamamlaniyor"
+            fi
+          else
+            echo "bu metne uyan oyuncu havuzu yok — genel broll kullaniliyor"
+          fi
+
+          if [ "$use_general" = 1 ]; then
+            broll_tags=$(printf '%s\n' "$all_tags" | grep -E '^broll[0-9]*$' || true)
+            [ -n "$broll_tags" ] || broll_tags="broll"
+            for tag in $broll_tags; do
+              mkdir -p "work/broll/$tag"
+              gh release download "$tag" -R "$MEDIA_REPO" -D "work/broll/$tag" || echo "no $tag release"
+            done
+          fi
+          gh release download music -R "$MUSIC_REPO" -D work/music || echo "no music release"
+          gh release download photos -R "$MEDIA_REPO" -D work/photos || echo "no photos release"
+          # stadyum ugultusu / ortam sesi — opsiyonel, yoksa video sessiz zeminde kalir
+          gh release download ambient -R "$MEDIA_REPO" -D work/ambient || echo "no ambient release"
+          # hareketli grafik kutuphanesi — motion-lib is akisi bir kez uretir,
+          # burada stok video gibi indirilir
+          gh release download motion -R "$MEDIA_REPO" -D work/motion || echo "no motion release"
+          python3 scripts/photos.py content/current/script.json || echo "auto photos skipped"
+
+      - name: Visuals
+        run: python3 scripts/visuals.py content/current/script.json
+
+      - name: Sound effects
+        run: python3 scripts/sfx.py
+
+      - name: Assemble
+        env:
+          # sessiz açılış yok: video ilk söylenen kelimeyle başlasın
+          INTRO: "0"
+          # Aynı stok klip bir videoda ikinci kez görünmesin:
+          # CUTIN_RATE 0 -> bir önceki klibi yakınlaştırıp tekrar kullanan
+          #   "cut-in" kapalı (varsayılan %22 idi; arka arkaya aynı görüntü veriyordu)
+          # BROLL_COOLDOWN çok büyük -> video boyunca kullanılan her klip havuz
+          #   tükenene kadar dışarıda kalır (varsayılan 8 idi). broll + broll2 +
+          #   ... hepsi tek havuzda, her videoya kendi tohumuyla karışık gelir.
+          CUTIN_RATE: "0"
+          BROLL_COOLDOWN: "100000"
+        run: python3 scripts/assemble.py content/current/script.json
+
+      - name: Videoyu indirmeye aç
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          SIZE=$(du -h work/final.mp4 | cut -f1)
+
+          # GitHub tek dosyada 2 GB siniri koyuyor; uzun bir kayit bunu asarsa
+          # video kaybolmasin diye parcalara bolup oyle yayinliyoruz.
+          SIZE_B=$(stat -c%s work/final.mp4)
+          TARGET=1600000000
+          NOTE=""
+          FILES="work/final.mp4"
+          if [ "$SIZE_B" -gt "$TARGET" ]; then
+            # Bolme isi videonun ikinci bir kopyasini yaziyor. Kurgu artiklari
+            # (segmentler, stok videolar, fotograflar) diskte durdugu surece
+            # yer kalmiyor ve "No space left on device" ile dusuyorduk.
+            # Bunlar bu noktada tamamen gereksiz, siliyoruz.
+            rm -rf work/segs work/broll work/photos work/cards work/music work/motion work/ambient
+            df -h / | tail -1
+            DUR=$(ffprobe -v error -show_entries format=duration -of csv=p=0 work/final.mp4)
+            PARTS=$(( SIZE_B / TARGET + 1 ))
+            SEG=$(python3 -c "print(max(60,int(float('$DUR')/$PARTS)+1))")
+            echo "video $SIZE -> $PARTS parca"
+            ffmpeg -y -v error -i work/final.mp4 -c copy -map 0 \
+                   -f segment -segment_time "$SEG" -reset_timestamps 1 \
+                   "work/bolum_%02d.mp4"
+            FILES=$(ls work/bolum_*.mp4 | tr '\n' ' ')
+            NOTE=" Video $PARTS parca halinde, sirayla indir."
+          fi
+
+          # Ayni ses dosyasi icin iki calistirma ust uste gelirse ikincisi
+          # "tag already exists" ile duserdi ve hazir video cope giderdi.
+          # Surum zaten varsa dosyayi onun uzerine ekliyoruz.
+          gh release create "${{ matrix.item.tag }}" $FILES \
+            -R "$GITHUB_REPOSITORY" -t "${{ matrix.item.title }}" \
+            -n "Hazir video ($SIZE).$NOTE Asagidaki dosyalara tikla." \
+          || gh release upload "${{ matrix.item.tag }}" $FILES \
+            -R "$GITHUB_REPOSITORY" --clobber
+          URL="https://github.com/$GITHUB_REPOSITORY/releases/tag/${{ matrix.item.tag }}"
+          echo "url=$URL" >> $GITHUB_OUTPUT
+          {
+            echo "## ${{ matrix.item.title }}"
+            echo ""
+            echo "Indirme sayfasi: $URL"
+            echo ""
+            echo "Boyut: $SIZE"
+          } >> $GITHUB_STEP_SUMMARY
+
+      - name: Bildirim (issue)
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/brief.py content/current/script.json \
+                                   content/current/meta.json > /dev/null || exit 0
+          {
+            echo ""
+            echo "---"
+            echo "**Videoyu indir:** ${{ steps.release.outputs.url }}"
+          } >> work/kapak_brief.md
+          gh issue create -R "$GITHUB_REPOSITORY" \
+            --title "VIDEO HAZIR — ${{ matrix.item.title }}" \
+            --body-file work/kapak_brief.md \
+            --assignee "${{ github.repository_owner }}" \
+          || gh issue create -R "$GITHUB_REPOSITORY" \
+            --title "VIDEO HAZIR — ${{ matrix.item.title }}" \
+            --body-file work/kapak_brief.md

@@ -1,0 +1,70 @@
+name: motion-lib
+# Hareketli görsel kütüphanesini üretir ve `motion` etiketiyle yayınlar.
+#
+# Bu iş akışı GÜNLÜK DEĞİL — elle çalıştırılır. Remotion her kareyi tarayıcıda
+# çizdiği için yavaş: 24 klip yaklaşık 1,5 saat sürer. Ama bir kez üretilir,
+# sonra bütün videolar bu kütüphaneden beslenir; video başına ek maliyet yok.
+#
+# Kanalın renklerini channel.json'dan alır, yani her kanalın kütüphanesi
+# kendi paletinde olur.
+on:
+  workflow_dispatch:
+    inputs:
+      count:
+        description: "Kaç klip üretilsin"
+        default: "24"
+      seconds:
+        description: "Her klip kaç saniye"
+        default: "8"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install deps
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+
+      - name: Remotion kurulumu
+        run: |
+          python3 scripts/remotion_setup.py
+          if [ -x /usr/bin/google-chrome ]; then
+            echo "REMOTION_CHROME=/usr/bin/google-chrome" >> $GITHUB_ENV
+          else
+            (cd remotion && npx --yes remotion browser ensure) || true
+          fi
+
+      - name: Kütüphaneyi üret
+        env:
+          MOTION_COUNT: ${{ inputs.count }}
+          MOTION_SECONDS: ${{ inputs.seconds }}
+        run: python3 scripts/motion_lib.py
+
+      - name: Yayınla
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          rm -f work/motion/_props.json
+          COUNT=$(ls work/motion/*.mp4 2>/dev/null | wc -l)
+          if [ "$COUNT" -eq 0 ]; then
+            echo "hic klip uretilmedi"; exit 1
+          fi
+          echo "$COUNT klip yayinlaniyor"
+          gh release create motion work/motion/*.mp4 \
+            -R "$GITHUB_REPOSITORY" -t "motion" \
+            -n "Hareketli gorsel kutuphanesi ($COUNT klip)." \
+          || gh release upload motion work/motion/*.mp4 \
+            -R "$GITHUB_REPOSITORY" --clobber

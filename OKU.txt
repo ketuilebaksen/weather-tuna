@@ -1,0 +1,115 @@
+WEATHER TUNA — KANAL KURULUMU
+==============================
+
+Icerik: Amerika gunluk hava durumu, gece yasananlar, bolge bolge ne oluyor.
+Anlatici: James. Kanal adi metinde 3-4 kez geciyor, abone/like cagrisi da.
+
+Sistem NFL kanallarinin birebir aynisi. Iki fark var:
+
+1. Otomatik fotograf cekme KAPALI. Sporcu kadrosu olmayan bir kanalda
+   sistem Wikimedia'dan oyuncu fotografi ariyordu ve kadro bos olunca eski
+   Knicks listesine dusuyordu — hava durumu videosuna basketbolcu fotografi
+   girerdi. channel.json'a "auto_photos": false koydum, photos.py'yi de ona
+   gore yamadim. Fotograf istersen photos release'ine kendin yuklersin.
+
+2. Metin cok daha uzun. 15.000 karakter ~2.700 kelime ~17,5 dakikalik video.
+   Bunun sonuclari asagida ADIM 5 ve ADIM 6'da.
+
+
+ADIM 1 — YENI DEPO AC
+---------------------
+github.com -> + -> New repository
+  Repository name : weather-tuna
+  Public sec
+  Add a README      -> ISARETLEME    (isaretlersen push hata verir)
+  Create repository
+
+
+ADIM 2 — DOSYALARI KOPYALA
+--------------------------
+Code -> Open with GitHub Desktop, sonra bu zip'in icindekileri (OKU.txt,
+JAMES-PROMPT.txt ve ORNEK- ile baslayanlar haric) o klasore KOPYALA.
+
+Klasorde su kalmali:
+  .git  .github  assets  content  scripts  .gitignore  channel.json
+
+GitHub Desktop -> Summary: "ilk kurulum" -> Commit to main -> Push origin
+
+
+ADIM 3 — IZIN (sart)
+--------------------
+Settings -> Actions -> General -> "Read and write permissions" -> Save
+
+
+ADIM 4 — METNI URET
+-------------------
+JAMES-PROMPT.txt dosyasindaki promptu kendi yapay zekana yapistir, altina da
+o gunun ham verisini ekle: NWS uyarilari, Storm Prediction Center gorunumu,
+Hurricane Center bulteni, gece gelen raporlar, sicakliklar.
+
+Cikti su sekilde gelir:
+
+  TITLE: ...        <- mp3'un dosya adi bu olacak
+  CHARACTERS: ...   <- karakter sayisi, 14.500-15.500 arasi olmali
+  ===SCRIPT===
+  ...metin...       <- ses programina yapistiracagin kisim
+
+Promptu uc tur test ettim, her turde kirmayi denedim ve bulduklarimi
+duzelttim. Son durumda uydurma uyari, uydurma saat, uydurma olcum veya
+uydurma yer ismi uretmiyor.
+
+NE KADAR VERI YAPISTIRMALISIN
+15.000 karakter ince veriden cikmaz. Kabaca sunlar gerekiyor:
+  - gunun en buyuk olayi, saat saat zamanlamasiyla
+  - 5-6 bolge icin ayri ayri durum
+  - gece gelen raporlar (dolu, ruzgar, rekor, kapanan yol)
+  - onumuzdeki birkac gunun gorunumu
+Veri yetersizse prompt metni uydurmuyor — kisa kesiyor ve en sona
+"NOT ENOUGH MATERIAL:" satiriyla neye ihtiyaci oldugunu yaziyor. O satiri
+gordugunde daha fazla veri yapistirip tekrar calistir.
+
+ORNEK-METIN.txt ve ORNEK-KISA.txt bu iki durumun ciktisi — sirasiyla dolu
+veriyle 14.978 karakter, ve cok az veriyle 5.134 karakter + uyari satiri.
+Ikisi de uydurma test verisiyle uretildi, gercek hava durumu degil, sadece
+ne bekleyecegini gormen icin.
+
+
+ADIM 5 — STOK VIDEOLARI YUKLE
+-----------------------------
+Releases -> Create a new release
+  Tag / Title : broll
+  Dosyalar    : firtina, yagmur, kar, radar, sel, sehir, yol, gokyuzu
+  ---> "Publish release"   ("Save draft" e BASMA)
+
+ONEMLI — 17 dakikalik video icin en az 250 klip koy.
+Sistem gövdede 3,8 saniyede bir kesiyor, yani ~275 kesim oluyor. 100 klip
+yuklersen her klip ortalama 3 kez tekrar eder ve izleyici fark eder.
+Doldugunda broll2, broll3 diye devam et, sistem hepsini tariyor.
+
+Istege bagli:  music   ambient   photos
+
+
+ADIM 6 — ILK VIDEO
+------------------
+Ses programina kanal olarak ekle, depo adi: weather-tuna
+Metni seslendirip mp3'u content/queue icine yazacak, dosya adi TITLE olacak.
+
+RENDER SURESI: 17 dakikalik video icin 45-60 dakika bekle. NFL videolari
+3-5 dakikada bitiyordu, bu normal — video 5 kat uzun. Is siniri 330 dakika,
+yani sorun degil, sadece "takildi mi" diye panige kapilma.
+
+Render kaydinda goreceklerin:
+  [assemble] b-roll: 250 clips (offset 7)
+  [photos] auto_photos kapali — sadece photos release'i kullanilir
+  [assemble] kurgu karisimi: 275 stok video / 0 fotograf / ... (stok %100)
+  [assemble] DONE -> work/final.mp4 (17.4 min)
+
+
+TEMPO AYARLARI
+--------------
+channel.json'da su uc degeri sonra oynayabilirsin:
+  "hook_cut": 2.6          acilisin kesim hizi (dusuk = daha hizli)
+  "body_cut": 3.8          govdenin kesim hizi
+  "overlay_every_sec": 24  ekrana yazi gelme sikligi
+
+Video fazla yorucu gelirse body_cut'i 4.5'e cikar. Daha sert istersen 3.2.
