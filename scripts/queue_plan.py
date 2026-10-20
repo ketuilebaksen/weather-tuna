@@ -11,7 +11,7 @@ Writes a GitHub Actions matrix to $GITHUB_OUTPUT:
   jobs   [{"path": ..., "title": ..., "tag": ...}]
   count  how many will actually render
 """
-import json, os, re, subprocess, sys
+import json, os, re, subprocess, sys, urllib.parse
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 Q = os.path.join(BASE, "content", "queue")
@@ -46,14 +46,29 @@ def published():
     try:
         out = subprocess.run(
             ["gh", "release", "list", "-L", "200",
-             "--json", "tagName", "-R", os.environ["GITHUB_REPOSITORY"]],
+             "--json", "tagName,publishedAt,createdAt", "-R", os.environ["GITHUB_REPOSITORY"]],
             capture_output=True, text=True, timeout=90)
         if out.returncode == 0:
-            return {r["tagName"] for r in json.loads(out.stdout or "[]")}
+            return {r["tagName"]: (r.get("publishedAt") or r.get("createdAt") or "")
+                    for r in json.loads(out.stdout or "[]")}
         print(f"[queue] release listesi alinamadi: {out.stderr.strip()[:200]}")
     except Exception as e:
         print(f"[queue] release listesi alinamadi ({e})")
-    return set()          # emin olamıyorsak render et — eksik video, fazladan videodan kötüdür
+    return {}          # emin olamıyorsak render et — eksik video, fazladan videodan kötüdür
+
+
+def pushed_at(path):
+    """ISO time of the last commit touching this queue file (checkout is shallow,
+    so we ask the API instead of git log)."""
+    try:
+        q = urllib.parse.quote(path)
+        out = subprocess.run(
+            ["gh", "api", f"repos/{os.environ['GITHUB_REPOSITORY']}/commits?path={q}&per_page=1",
+             "-q", ".[0].commit.committer.date"],
+            capture_output=True, text=True, timeout=60)
+        return out.stdout.strip() if out.returncode == 0 else ""
+    except Exception:
+        return ""
 
 
 def main():
@@ -73,8 +88,18 @@ def main():
         t = title_of(f)
         tag = slug(t)
         if tag in done:
-            skipped.append(t)
-            continue
+            path = f"content/queue/{f}"
+            when = pushed_at(path)
+            # eski ayni adli video, ses dosyasi ondan SONRA yeniden gonderilmis
+            if when and done[tag] and done[tag] < when:
+                tag = (tag[:80].rstrip("-") + "-" + when[:10].replace("-", ""))
+                if tag in done:
+                    skipped.append(t)
+                    continue
+                print(f"[queue] ayni baslik yeniden gonderilmis -> {tag}")
+            else:
+                skipped.append(t)
+                continue
         if any(j["tag"] == tag for j in jobs):
             print(f"[queue] ayni isimde ikinci dosya atlandi: {f}")
             continue
